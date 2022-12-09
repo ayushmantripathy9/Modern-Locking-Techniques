@@ -1,15 +1,12 @@
 #include <bits/stdc++.h>
 #include <chrono>
 #include <thread>
-#include <mutex>
 #include <benchmark/benchmark.h>
 #include "timer.cpp"
-#include "mcslock.cpp"
-#include "tas.cpp"
-#include "ttas.cpp"
-#include "clhlock.cpp"
-#include "alock.cpp"
-#include "ttasbackofflock.cpp"
+
+#include "Locks/compositelock.cpp"
+
+
 using namespace std;
 
 template <typename LockType>
@@ -37,8 +34,15 @@ class critical_cases
         {
         }
 
-        std::lock_guard<LockType> guard(lock);
-        ++counter;
+        if(lock.trylock())
+        {
+            ++counter;
+            lock.unlock();
+        }
+        else
+        {
+           failed++;
+        }
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -53,13 +57,22 @@ class critical_cases
         {
         }
 
-        std::lock_guard<LockType> guard(lock);
-        ++counter;
-        // Do artificial work for 50us
-        timer t2;
-        while (t2.elapsed()< (uint64_t)(grain_size/2)*1e5)
+        if(lock.trylock())
         {
+            ++counter;
+            // Do artificial work for 50us
+            timer t2;
+            while (t2.elapsed()< (uint64_t)(grain_size/2)*1e5)
+            {
+            }
+            lock.unlock();
         }
+        else
+        {
+           failed++;
+        }
+
+        
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -68,19 +81,30 @@ class critical_cases
     //  the code is under locks.
     void critical_big(std::uint64_t grain_size)
     {
-        std::lock_guard<LockType> guard(lock);
-        ++counter;
-
-        // Do artificial work for grain_size
-        timer t;
-        while (t.elapsed() < grain_size*1e5)
+        
+        if(lock.trylock())
         {
+            ++counter;
+            // Do artificial work for grain_size
+            timer t;
+            while (t.elapsed() < grain_size*1e5)
+            {
+            }
+            lock.unlock();
         }
+        else
+        {
+           failed++;
+        }
+
+        
     }
 
 private:
     std::uint64_t counter{};
     LockType lock{};
+public:
+    atomic<int>failed{0};
 };
 
 template <typename LockType>
@@ -114,7 +138,7 @@ void* Critical_big(void* arg)
 }
 
 template <typename LockType>
-void critical_small(std::uint64_t num_tasks, std::uint64_t grain_size)
+double critical_small(std::uint64_t num_tasks, std::uint64_t grain_size)
 {
     critical_cases<LockType> cases;
     std::vector <pthread_t> temp;
@@ -137,10 +161,11 @@ void critical_small(std::uint64_t num_tasks, std::uint64_t grain_size)
         //cases.critical_small(grain_size);
     }
     
+    return (double)cases.failed;
 } 
 
 template <typename LockType>
-void critical_med(std::uint64_t num_tasks, std::uint64_t grain_size)
+double critical_med(std::uint64_t num_tasks, std::uint64_t grain_size)
 {
     critical_cases<LockType> cases;
     std::vector <pthread_t> temp;
@@ -162,11 +187,13 @@ void critical_med(std::uint64_t num_tasks, std::uint64_t grain_size)
         //temp[i]->join(); 
         //cases.critical_small(grain_size);
     }
+    return (double)cases.failed;
+   
     
 } 
 
 template <typename LockType>
-void critical_big(std::uint64_t num_tasks, std::uint64_t grain_size)
+double critical_big(std::uint64_t num_tasks, std::uint64_t grain_size)
 {
     critical_cases<LockType> cases;
     std::vector <pthread_t> temp;
@@ -189,65 +216,56 @@ void critical_big(std::uint64_t num_tasks, std::uint64_t grain_size)
         //cases.critical_small(grain_size);
     }
     
+    return (double)cases.failed;
 } 
 
 
 template <typename LockType>
 static void BM_Lock_Small(benchmark::State& state) {
-  for (auto _ : state)
-    critical_small<LockType>(state.range(0),state.range(1));
-    benchmark::ClobberMemory();
+  int count = 0;
+  double failed = 0.0;
+  for (auto _ : state){
+     failed += critical_small<LockType>(state.range(0),state.range(0));
+     count++;
+  }
+    
+  cout<<"Terminated threads fraction "<< failed/(count*state.range(0))<<endl;
 }
 
 template <typename LockType>
 static void BM_Lock_Med(benchmark::State& state) {
-  for (auto _ : state)
-    critical_med<LockType>(state.range(0),state.range(1));
-    benchmark::ClobberMemory();
+  int count = 0;
+  double failed = 0.0;
+  for (auto _ : state){
+     failed += critical_med<LockType>(state.range(0),state.range(1));
+     count++;
+  }
+    
+  cout<<"Terminated threads fraction "<< failed/(count*state.range(0)) <<endl;
 }
 
 template <typename LockType>
 static void BM_Lock_Big(benchmark::State& state) {
-  for (auto _ : state)
-    critical_big<LockType>(state.range(0),state.range(1));
-    benchmark::ClobberMemory();
+  int count = 0;
+  double failed = 0.0;
+  for (auto _ : state){
+     failed += critical_big<LockType>(state.range(0),state.range(1));
+     count++;
+  }
+    
+  cout<<"Terminated threads fraction "<< failed/(count*state.range(0)) <<endl;
 }
-
 
 
 
 
 // Register the function as a benchmark
-BENCHMARK(BM_Lock_Small<locks::MCSlock>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
-BENCHMARK(BM_Lock_Med<locks::MCSlock>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
-BENCHMARK(BM_Lock_Big<locks::MCSlock>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
-
-BENCHMARK(BM_Lock_Small<locks::CLHlock>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
-BENCHMARK(BM_Lock_Med<locks::CLHlock>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
-BENCHMARK(BM_Lock_Big<locks::CLHlock>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
 
 
-BENCHMARK(BM_Lock_Small<locks::Alock>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
-BENCHMARK(BM_Lock_Med<locks::Alock>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
-BENCHMARK(BM_Lock_Big<locks::Alock>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
+BENCHMARK(BM_Lock_Small<CompositeLock>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
+BENCHMARK(BM_Lock_Med<CompositeLock>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
+BENCHMARK(BM_Lock_Big<CompositeLock>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
 
-BENCHMARK(BM_Lock_Small<locks::TAS>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
-BENCHMARK(BM_Lock_Med<locks::TAS>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
-BENCHMARK(BM_Lock_Big<locks::TAS>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
 
-BENCHMARK(BM_Lock_Small<locks::TTAS>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
-BENCHMARK(BM_Lock_Med<locks::TTAS>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
-BENCHMARK(BM_Lock_Big<locks::TTAS>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
 
-BENCHMARK(BM_Lock_Small<locks::BackOffLock>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
-BENCHMARK(BM_Lock_Med<locks::BackOffLock>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
-BENCHMARK(BM_Lock_Big<locks::BackOffLock>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2})->Args({100000,2});
-
-BENCHMARK(BM_Lock_Small<std::mutex>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2});
-BENCHMARK(BM_Lock_Med<std::mutex>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2});
-BENCHMARK(BM_Lock_Big<std::mutex>)->Args({10,2})->Args({100,2})->Args({1000,2})->Args({10000,2});
-
-//BENCHMARK(Comp_trial);`
 BENCHMARK_MAIN();
-
-
